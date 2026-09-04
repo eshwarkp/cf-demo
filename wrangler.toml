@@ -1,0 +1,13 @@
+name = "cf-demo"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Intercept traffic for tunnel.eshwar.tech/secure*
+routes = [
+  { pattern = "tunnel.eshwar.tech/secure*", zone_name = "eshwar.tech" }
+]
+
+# Bind private R2 bucket to the worker runtime
+[[r2_buckets]]
+binding = 'FLAGS_BUCKET'
+bucket_name = 'country-flags'
