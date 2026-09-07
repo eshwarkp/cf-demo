@@ -30,6 +30,9 @@ export default {
       const headers = new Headers();
       object.writeHttpMetadata(headers);
       headers.set("content-type", "image/png");
+      
+      // Optimization: Cache flag assets at the Edge and Browser for 24 hours
+      headers.set("cache-control", "public, max-age=86400, s-maxage=86400");
 
       return new Response(object.body, { headers });
     }
@@ -57,7 +60,7 @@ export default {
         <p>
             <strong>${email}</strong> authenticated at 
             <code>${timestamp}</code> from 
-            <a href="https://tunnel.eshwar.tech/secure/${country}">${country}</a>
+            <a href="/secure/${country}">${country}</a>
         </p>
     </div>
 </body>
