@@ -59,7 +59,7 @@ The migration transitions the infrastructure through two states:
 4. Issued a Let's Encrypt TLS certificate on the origin, bound to port 443.
 5. Set Cloudflare SSL/TLS mode to **Full (Strict)**.
 
-![TLS Full Strict curl verification](screenshots/02_tls_strict_curl.jpg)
+![TLS Full Strict curl verification](screenshots/02_tls_strict_curl.png)
 
 > This is the "legacy perimeter" state: the origin is reachable directly if someone discovers its IP, bypassing Cloudflare's WAF and rate limiting entirely. This is the flaw Phase 4 fixes.
 
@@ -119,7 +119,7 @@ gcloud compute routers nats create nat-config \
 
 | Direct-IP access (blocked) | Tunnel access (still works) |
 |---|---|
-| ![Origin lockdown timeout](screenshots/06a_origin_lockdown.png) | ![Tunnel curl success](screenshots/05_tunnel_curl_success.jpg) |
+| ![Origin lockdown timeout](screenshots/06a_origin_lockdown.png) | ![Tunnel curl success](screenshots/05_tunnel_curl_success.png) |
 
 > Origin now has zero open inbound ports and zero public IP. The only way in is through Cloudflare's edge.
 
@@ -282,14 +282,14 @@ Raw request headers observed via the origin's echo endpoint, showing Cloudflare 
 | # | Artifact | Evidence / Architectural Proof |
 |---|---|---|
 | 01 | `01_active_domain.png` | Active DNS zone in Cloudflare |
-| 02 | `02_tls_strict_curl.jpg` | Act 1 baseline: Full (Strict) TLS on public origin |
+| 02 | `02_tls_strict_curl.png` | Act 1 baseline: Full (Strict) TLS on public origin |
 | 03a | `03a_rate_limit_burst.png` | Rate limit burst: 200 → 429 |
 | 03b | `03b_rate_limit_rule_config.png` | Rate limit rule configuration |
 | 04a | `04a_iap_ssh_verified.png` | Admin access preserved via GCP Console SSH |
 | 04b | `04b_gcp_cloud_nat.png` | Cloud NAT gateway operational |
 | 04c | `04c_tunnel_healthy.png` | Cloudflare Tunnel Healthy |
 | 04d | `04d_tunnel_public_app_route.png` | Public route → `localhost:80` |
-| 05 | `05_tunnel_curl_success.jpg` | Tunnel reachable post-lockdown |
+| 05 | `05_tunnel_curl_success.png` | Tunnel reachable post-lockdown |
 | 06a | `06a_origin_lockdown.png` | Direct-IP connection times out (core pivot proof) |
 | 06b | `06b_github_oauth_app.png` | GitHub OAuth app registration |
 | 06c | `06c_access_login_gate.png` | GitHub SSO challenge intercepting `/secure` |
