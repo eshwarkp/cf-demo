@@ -1,32 +1,51 @@
-# Cloudflare Zero Trust & GCP Edge Architecture — Final Report (Verified)
+# Cloudflare Zero Trust & GCP Edge Architecture
+
+**Cloudflare Solutions Engineer — Technical Assignment**
+Domain: [`eshwar.tech`](https://eshwar.tech) · Public app: `tunnel.eshwar.tech`
+
+This repository documents the migration of an application hosted on Google Cloud Platform (GCP) from a legacy, public-facing perimeter to a Zero Trust architecture backed by Cloudflare — including the Worker source (`index.js`) and config (`wrangler.toml`) used to serve identity-aware, edge-rendered content from a private R2 bucket.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Technical Specifications](#technical-specifications)
+- [Phase 1 — Domain Onboarding](#phase-1--domain-onboarding)
+- [Phase 2 — Legacy Baseline (Public Origin & Full-Strict TLS)](#phase-2--legacy-baseline-setup-public-origin--full-strict-tls)
+- [Phase 3 — Edge Rate Limiting](#phase-3--edge-rate-limiting-enforcement)
+- [Phase 4 — Zero Trust Pivot (Cloud NAT, Tunnel & Lockdown)](#phase-4--zero-trust-pivot-cloud-nat-tunnel--origin-lockdown)
+- [Phase 5 — Access & GitHub SSO](#phase-5--cloudflare-access--dual-rule-github-sso)
+- [Phase 6 — Worker & Private R2](#phase-6--serverless-edge-worker--private-r2-integration)
+- [Submission Artifact Index](#submission-artifact-index)
+
+---
 
 ## Overview
 
-This report documents the migration of an application hosted on Google Cloud Platform (GCP) from a legacy, public-facing perimeter to a Zero Trust architecture backed by Cloudflare.
-
 The migration transitions the infrastructure through two states:
 
-1. **Act 1 (Legacy Baseline):** An origin VM exposed directly to the public internet via an External IP, proxying through Cloudflare with Full (Strict) TLS and rate limiting.
-2. **Act 2 (Zero Trust Target):** Complete origin lockdown. The VM's public IP is removed, inbound web ports (80/443) are closed, and outbound connectivity is maintained via Cloud NAT. Ingress traffic to the application is restricted exclusively to authenticated requests passing through Cloudflare Access, Cloudflare Tunnel, and Cloudflare Workers.
+1. **Act 1 (Legacy Baseline):** an origin VM exposed directly to the public internet via an External IP, proxying through Cloudflare with Full (Strict) TLS and rate limiting.
+2. **Act 2 (Zero Trust Target):** complete origin lockdown. The VM's public IP is removed, inbound web ports (80/443) are closed, and outbound connectivity is maintained via Cloud NAT. Ingress traffic to the application is restricted exclusively to authenticated requests passing through Cloudflare Access, Cloudflare Tunnel, and Cloudflare Workers.
 
 ---
 
 ## Technical Specifications
 
-- **Domain & Routing:** `eshwar.tech` | **Public Hostname:** `tunnel.eshwar.tech`
-- **GCP Infrastructure:** `e2-micro` (`us-central1-a`, Always Free compute tier), Debian/Ubuntu OS, Node.js/Express origin server on port 80.
-- **GCP Egress Network:** Private Subnet (`default`), Cloud Router (`nat-router`) & Cloud NAT (`nat-config`, `us-central1`).
-- **Edge Stack:** Cloudflare Worker (`cf-demo`), Private R2 Bucket (`country-flags`).
-- **Identity Infrastructure:** Cloudflare Access integrated with GitHub OAuth 2.0. Access application: "Cloudflare Zero Trust Access." Policy: "Allow-Self-GitHub-And-Cloudflare."
+| Component | Detail |
+|---|---|
+| Domain & Routing | `eshwar.tech` · Public hostname `tunnel.eshwar.tech` |
+| GCP Infrastructure | `e2-micro` (`us-central1-a`, Always Free compute tier), Debian/Ubuntu, Node.js/Express origin on port 80 |
+| GCP Egress Network | Private subnet (`default`), Cloud Router `nat-router` & Cloud NAT `nat-config` (`us-central1`) |
+| Edge Stack | Cloudflare Worker `cf-demo` · Private R2 bucket `country-flags` |
+| Identity | Cloudflare Access + GitHub OAuth 2.0 · Access app "Cloudflare Zero Trust Access" · Policy "Allow-Self-GitHub-And-Cloudflare" |
 
 ---
 
 ## Phase 1 — Domain Onboarding
 
-1. Active domain onboarding verified within the Cloudflare Dashboard for `eshwar.tech`.
-2. Name servers set to Cloudflare authoritative NS records.
+1. Domain onboarded to Cloudflare (Free plan).
+2. Nameservers updated to Cloudflare's authoritative NS records at the registrar.
 
-**Verification:** `01_active_domain.png` — Cloudflare Dashboard showing `eshwar.tech` Active. ✅
+![Active domain status](screenshots/01_active_domain.png)
 
 ---
 
@@ -34,28 +53,29 @@ The migration transitions the infrastructure through two states:
 
 *This phase establishes the baseline state prior to executing origin lockdown.*
 
-1. **Provision Public VM:** GCP instance `origin-vm` (`e2-micro`, `us-central1-a`) with an automatically allocated External IP.
-2. **Deploy Application Stack:** Express app returning request headers as JSON, listening on port 80.
-3. **Configure DNS & TLS:**
-   - DNS A record: `www.eshwar.tech` → `<VM_EXTERNAL_IP>` (Proxy status: Proxied).
-   - Let's Encrypt TLS certificate on origin, bound to port 443.
-   - Cloudflare SSL/TLS mode set to **Full (Strict)**.
+1. Provisioned `origin-vm` (`e2-micro`, `us-central1-a`) with an automatically allocated external IP.
+2. Deployed an Express app returning request headers as JSON, listening on port 80.
+3. Created DNS A record `www.eshwar.tech` → `<VM_EXTERNAL_IP>` (Proxied).
+4. Issued a Let's Encrypt TLS certificate on the origin, bound to port 443.
+5. Set Cloudflare SSL/TLS mode to **Full (Strict)**.
 
-**Verification:** `02_tls_strict_curl.jpg` — `curl -i https://www.eshwar.tech` returns `HTTP/2 200` with valid cert chain. ✅
+![TLS Full Strict curl verification](screenshots/02_tls_strict_curl.jpg)
+
+> This is the "legacy perimeter" state: the origin is reachable directly if someone discovers its IP, bypassing Cloudflare's WAF and rate limiting entirely. This is the flaw Phase 4 fixes.
 
 ---
 
 ## Phase 3 — Edge Rate Limiting Enforcement
 
-1. **Rule configured:** Cloudflare WAF Rate Limiting — 5 requests / 10 seconds per IP → Block for 10 seconds.
-2. **Validation:**
+1. Configured a Cloudflare WAF rate limiting rule: 5 requests / 10 seconds per IP → Block for 10 seconds.
+2. Validated with a burst test:
    ```bash
    for i in {1..10}; do curl -s -o /dev/null -w "%{http_code}\n" https://www.eshwar.tech; done
    ```
 
-**Verification:**
-- `03a_rate_limit_burst.png` — output transitions `200` → `429` after threshold. ✅
-- `03b_rate_limit_rule_config.png` — rule shows 5 req/10s, Block, 10s duration. ✅
+| Burst result | Rule configuration |
+|---|---|
+| ![Rate limit burst](screenshots/03a_rate_limit_burst.png) | ![Rate limit rule config](screenshots/03b_rate_limit_rule_config.png) |
 
 ---
 
@@ -65,7 +85,7 @@ The migration transitions the infrastructure through two states:
 
 Administrative SSH access to `origin-vm` is maintained through the GCP Console's built-in SSH-in-browser client, which continues to function after the VM's external IP is removed.
 
-**Verification:** `04a_iap_ssh_verified.png` — active SSH-in-browser session (`eshwarkamalapathy@origin-vm:~$`). ✅
+![IAP SSH session](screenshots/04a_iap_ssh_verified.png)
 
 ### Step 2: Provision Cloud NAT Egress Pipeline
 
@@ -79,56 +99,67 @@ gcloud compute routers nats create nat-config \
     --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges
 ```
 
-**Verification:** `04b_gcp_cloud_nat.png` — `nat-config`, network `default`, region `us-central1`, status **Running**. ✅
+![Cloud NAT gateway](screenshots/04b_gcp_cloud_nat.png)
 
 ### Step 3: Deploy Cloudflare Tunnel
 
-1. Zero Trust Dashboard → Networks → Tunnels → `origin-tunnel`.
-2. Connector installed on the VM via `cloudflared service install <TOKEN>`.
-3. Public route mapped: `tunnel.eshwar.tech` → `http://localhost:80`.
+1. Created tunnel `origin-tunnel` in Zero Trust Dashboard → Networks → Tunnels.
+2. Installed the connector on the VM: `cloudflared service install <TOKEN>`.
+3. Mapped public route: `tunnel.eshwar.tech` → `http://localhost:80`.
 
-**Verification:**
-- `04c_tunnel_healthy.png` — `origin-tunnel`, type `cloudflared`, status **Healthy**. ✅
-- `04d_tunnel_public_app_route.png` — published route `tunnel.eshwar.tech` → `http://localhost:80`. ✅
+| Tunnel health | Public route |
+|---|---|
+| ![Tunnel healthy](screenshots/04c_tunnel_healthy.png) | ![Public app route](screenshots/04d_tunnel_public_app_route.png) |
 
 ### Step 4: Execute Origin Lockdown
 
-1. `origin-vm` external IP set to **None**.
-2. Ingress HTTP (80) / HTTPS (443) firewall rules removed.
-3. Tunnel daemon restarted over Cloud NAT.
+1. Set `origin-vm` external IP to **None**.
+2. Removed ingress HTTP (80) / HTTPS (443) firewall rules.
+3. Restarted the tunnel daemon over Cloud NAT.
 
-**Verification:**
-- `06a_origin_lockdown.png` — `curl -v --max-time 5 http://34.41.107.254` → `Connection timed out after 5006 milliseconds`. ✅
-- `05_tunnel_curl_success.jpg` — `curl -i https://tunnel.eshwar.tech` → `HTTP/2 200` (origin still reachable via tunnel; response is the base-route JSON, confirming end-to-end tunnel connectivity independent of the Access-protected `/secure` path). ✅
+| Direct-IP access (blocked) | Tunnel access (still works) |
+|---|---|
+| ![Origin lockdown timeout](screenshots/06a_origin_lockdown.png) | ![Tunnel curl success](screenshots/05_tunnel_curl_success.jpg) |
+
+> Origin now has zero open inbound ports and zero public IP. The only way in is through Cloudflare's edge.
 
 ---
 
 ## Phase 5 — Cloudflare Access & Dual-Rule GitHub SSO
 
-1. **GitHub OAuth App** ("Cloudflare Zero Trust Access"): Homepage `https://tunnel.eshwar.tech`, Redirect URI `https://long-thunder-ffde.cloudflareaccess.com/cdn-cgi/access/callback`.
-2. **Identity Provider:** GitHub added in Zero Trust Dashboard.
-3. **Access Application:** "Cloudflare Zero Trust Access," domain `tunnel.eshwar.tech`, path `secure*`.
-4. **Policy** ("Allow-Self-GitHub-And-Cloudflare"), two Include rules (OR'd):
+1. Registered a GitHub OAuth App ("Cloudflare Zero Trust Access"): homepage `https://tunnel.eshwar.tech`, redirect URI `https://long-thunder-ffde.cloudflareaccess.com/cdn-cgi/access/callback`.
+2. Added GitHub as an Identity Provider in the Zero Trust Dashboard.
+3. Created a Self-Hosted Access Application scoped to `tunnel.eshwar.tech`, path `secure*`.
+4. Configured policy "Allow-Self-GitHub-And-Cloudflare" with two Include rules (OR'd):
    - Emails → `eshwarkamalapathy@gmail.com`
    - Emails ending in → `cloudflare.com`
 
-**Verification:**
-- `06b_github_oauth_app.png` — OAuth app registration fields populated. ✅
-- `06c_access_login_gate.png` — "Sign in to GitHub to continue to Cloudflare Zero Trust Access." ✅
-- `07a_access_sso_success.png` — *(supplementary)* raw request headers post-login showing Access's injected `cf-access-authenticated-user-email` and JWT assertion — this is the evidence used to identify which header the Worker should read. ✅
-- `07b_access_policy_config.png` — policy shows **both** rules: `eshwarkamalapathy@gmail.com` AND `cloudflare.com`. ✅
-- `07c_access_denied_test.png` — "That account does not have access." (unauthorized GitHub account denied). ✅
+![GitHub OAuth app registration](screenshots/06b_github_oauth_app.png)
+
+![Access login gate](screenshots/06c_access_login_gate.png)
+
+<details>
+<summary>Supplementary: Access-injected identity headers post-login</summary>
+
+![SSO success headers](screenshots/07a_access_sso_success.png)
+
+Raw request headers observed via the origin's echo endpoint, showing Cloudflare Access's injected `cf-access-authenticated-user-email` and JWT assertion — the header the Worker reads to build the identity payload below.
+</details>
+
+| Access policy (dual rule) | Unauthorized user denied |
+|---|---|
+| ![Access policy config](screenshots/07b_access_policy_config.png) | ![Access denied test](screenshots/07c_access_denied_test.png) |
 
 ---
 
 ## Phase 6 — Serverless Edge Worker & Private R2 Integration
 
-1. **R2 Bucket:** `country-flags`, no custom domain, Public Development URL disabled.
-2. **Flags uploaded via CLI:**
+1. Created private R2 bucket `country-flags` (no custom domain, Public Development URL disabled).
+2. Uploaded flag assets via Wrangler CLI:
    ```bash
    wrangler r2 object put country-flags/SG.png --file=./SG.png --content-type=image/png
    ```
-3. **Worker project** (`cf-demo`), `wrangler.toml`:
+3. **`wrangler.toml`:**
    ```toml
    name = "cf-demo"
    main = "src/index.js"
@@ -145,7 +176,8 @@ gcloud compute routers nats create nat-config \
    bucket_name = 'country-flags'
    ```
    > Route binding is declared directly in `wrangler.toml` rather than attached manually via the dashboard — the route ships as part of the Worker's config-as-code.
-4. **Worker logic** (`src/index.js`):
+
+4. **`src/index.js`:**
    ```javascript
    export default {
      async fetch(request, env, ctx) {
@@ -226,44 +258,51 @@ gcloud compute routers nats create nat-config \
      },
    };
    ```
-5. **Deployed via Wrangler CLI** (`npx wrangler deploy`); route bound via `wrangler.toml`, not the dashboard.
 
-**Verification:**
-- `08a_r2_private_settings.png` — bucket `country-flags`, no custom domain, Public Development URL **disabled**. ✅
-- `08b_wrangler_deploy_output.png` — `npx wrangler deploy` succeeded, binding `env.FLAGS_BUCKET (country-flags)` confirmed, route `tunnel.eshwar.tech/secure*` deployed. ✅
-- `09_worker_route.png` — Custom Domains and Routes: `tunnel.eshwar.tech/secure*`, zone `eshwar.tech`. ✅
-- `10_secure_identity_payload.png` — renders `eshwarkamalapathy@gmail.com authenticated at 2026-09-06T18:26:06.644Z from SG`. ✅
-- `11_worker_r2_flag_display.png` — Singapore flag renders correctly from R2. ✅
-- `12a_content_type_html.png` — `/secure` → `Content-Type: text/html;charset=UTF-8`, `200 OK`. ✅
-- `12b_content_type_image.png` — `/secure/SG` → `Content-Type: image/png`, `200 OK`. ✅
-- `13_public_github_repo.png` — **⚠️ Still outstanding.** Push the Worker code to a public GitHub repo and capture the repo listing before submission.
+5. Deployed via Wrangler CLI (`npx wrangler deploy`); route bound via `wrangler.toml`, not the dashboard.
+
+![R2 private bucket settings](screenshots/08a_r2_private_settings.png)
+
+![Wrangler deploy output](screenshots/08b_wrangler_deploy_output.png)
+
+![Worker route trigger](screenshots/09_worker_route.png)
+
+| Identity payload (`/secure`) | Flag asset (`/secure/SG`) |
+|---|---|
+| ![Secure identity payload](screenshots/10_secure_identity_payload.png) | ![Worker R2 flag display](screenshots/11_worker_r2_flag_display.png) |
+
+| `/secure` → `text/html` | `/secure/SG` → `image/png` |
+|---|---|
+| ![Content-Type HTML](screenshots/12a_content_type_html.png) | ![Content-Type image](screenshots/12b_content_type_image.png) |
 
 ---
 
 ## Submission Artifact Index
 
-| # | Artifact Filename | Status | Evidence / Architectural Proof |
-|---|---|---|---|
-| 01 | `01_active_domain.png` | ✅ | Active DNS zone in Cloudflare |
-| 02 | `02_tls_strict_curl.jpg` | ✅ | Act 1 baseline: Full (Strict) TLS on public origin |
-| 03a | `03a_rate_limit_burst.png` | ✅ | Rate limit burst: 200 → 429 |
-| 03b | `03b_rate_limit_rule_config.png` | ✅ | Rate limit rule configuration |
-| 04a | `04a_iap_ssh_verified.png` | ✅ | Admin access preserved via GCP Console SSH |
-| 04b | `04b_gcp_cloud_nat.png` | ✅ | Cloud NAT gateway operational |
-| 04c | `04c_tunnel_healthy.png` | ✅ | Cloudflare Tunnel Healthy |
-| 04d | `04d_tunnel_public_app_route.png` | ✅ | Public route → `localhost:80` |
-| 05 | `05_tunnel_curl_success.jpg` | ✅ | Tunnel reachable post-lockdown |
-| 06a | `06a_origin_lockdown.png` | ✅ | Direct-IP connection times out (core pivot proof) |
-| 06b | `06b_github_oauth_app.png` | ✅ | GitHub OAuth app registration |
-| 06c | `06c_access_login_gate.png` | ✅ | GitHub SSO challenge intercepting `/secure` |
-| 07a | `07a_access_sso_success.png` | ✅ | Access-injected identity headers post-login (supplementary) |
-| 07b | `07b_access_policy_config.png` | ✅ | Dual-rule policy: email AND `@cloudflare.com` |
-| 07c | `07c_access_denied_test.png` | ✅ | Unauthorized user denied |
-| 08a | `08a_r2_private_settings.png` | ✅ | R2 bucket `country-flags` is private |
-| 08b | `08b_wrangler_deploy_output.png` | ✅ | Worker deployed via Wrangler CLI |
-| 09 | `09_worker_route.png` | ✅ | Route bound to `tunnel.eshwar.tech/secure*` |
-| 10 | `10_secure_identity_payload.png` | ✅ | Identity payload renders correctly |
-| 11 | `11_worker_r2_flag_display.png` | ✅ | Flag asset served from private R2 |
-| 12a | `12a_content_type_html.png` | ✅ | `/secure` returns `text/html` |
-| 12b | `12b_content_type_image.png` | ✅ | `/secure/SG` returns `image/png` |
-| 13 | `13_public_github_repo.png` | ⚠️ **Pending** | Public repo of Worker code |
+| # | Artifact | Evidence / Architectural Proof |
+|---|---|---|
+| 01 | `01_active_domain.png` | Active DNS zone in Cloudflare |
+| 02 | `02_tls_strict_curl.jpg` | Act 1 baseline: Full (Strict) TLS on public origin |
+| 03a | `03a_rate_limit_burst.png` | Rate limit burst: 200 → 429 |
+| 03b | `03b_rate_limit_rule_config.png` | Rate limit rule configuration |
+| 04a | `04a_iap_ssh_verified.png` | Admin access preserved via GCP Console SSH |
+| 04b | `04b_gcp_cloud_nat.png` | Cloud NAT gateway operational |
+| 04c | `04c_tunnel_healthy.png` | Cloudflare Tunnel Healthy |
+| 04d | `04d_tunnel_public_app_route.png` | Public route → `localhost:80` |
+| 05 | `05_tunnel_curl_success.jpg` | Tunnel reachable post-lockdown |
+| 06a | `06a_origin_lockdown.png` | Direct-IP connection times out (core pivot proof) |
+| 06b | `06b_github_oauth_app.png` | GitHub OAuth app registration |
+| 06c | `06c_access_login_gate.png` | GitHub SSO challenge intercepting `/secure` |
+| 07a | `07a_access_sso_success.png` | Access-injected identity headers post-login (supplementary) |
+| 07b | `07b_access_policy_config.png` | Dual-rule policy: email AND `@cloudflare.com` |
+| 07c | `07c_access_denied_test.png` | Unauthorized user denied |
+| 08a | `08a_r2_private_settings.png` | R2 bucket `country-flags` is private |
+| 08b | `08b_wrangler_deploy_output.png` | Worker deployed via Wrangler CLI |
+| 09 | `09_worker_route.png` | Route bound to `tunnel.eshwar.tech/secure*` |
+| 10 | `10_secure_identity_payload.png` | Identity payload renders correctly |
+| 11 | `11_worker_r2_flag_display.png` | Flag asset served from private R2 |
+| 12a | `12a_content_type_html.png` | `/secure` returns `text/html` |
+| 12b | `12b_content_type_image.png` | `/secure/SG` returns `image/png` |
+| 13 | `13_public_github_repo.png` | Public repo of Worker code (this repository) |
+
+All artifacts complete. ✅
